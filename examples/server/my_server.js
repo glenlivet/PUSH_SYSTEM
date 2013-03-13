@@ -3,11 +3,11 @@
  */
  //TODO: getCachedMsg() leaving to be finished
  //TODO: 没有做retain
- //TODO: client.on('unsubscribe')
- //TODO: dup
+ //TODO: client.on('unsubscribe') ??????//TESTING
+ //TODO: dup						????????//TESTING
  //TODO: 
- //TODO: NO PUBLISHEE
- //TODO: 重复订阅
+ //TODO: NO PUBLISHEE		?????????????//TESTING
+ //TODO: 重复订阅				???????//testing
  
  
 var mqtt = require('../..')
@@ -65,7 +65,7 @@ mqtt.createServer(function(client) {
   	//log
   	_nodeLog.info('Client[clientId=' + client.id + '] has sent a SUBSCRIBE');
     var granted = [];
-    var _subs = [];
+    //var _subs = [];       //TESTING redundant 13032013
 
     for (var i = 0; i < packet.subscriptions.length; i++) {
     	//订阅的请求qos
@@ -73,21 +73,37 @@ mqtt.createServer(function(client) {
       	//订阅的主题
         , _topic = packet.subscriptions[i].topic;
         var _sub = null;
+        //检查客户是否已订阅过 如果是 检查订阅等级是否变化？
+        var hasSubed = false;
+        for(var j=0;j<client.subscriptions.length;j++){
+        	if(client.subscriptions[j].topicDesc === _topic){
+        		//dumplicated subscription
+        		//check qos
+        		client.subscriptions[j].qos = _qos;
+        		hasSubed = true;
+        		break;
+        	}
+        }
+        //如果已经订阅过 则跳到下一个订阅物继续订阅
+        if(hasSubed){
+        	granted.push(_qos);
+        	continue;
+        }
         //是否为wildcard订阅
         if(_topic.indexOf('+')>=0||_topic.indexOf('#')>=0){
         	//是，用正则表达式
        		var _reg = new RegExp('^' + _topic.replace('+', '[^\/]+').replace('/#', '(/.+)?$'));
 			//新建一个Subscription对象
-			_sub = new Subscription({topic: _reg, abs: false, qos: _qos});
+			_sub = new Subscription({topic: _reg, abs: false, qos: _qos, topicDesc: _topic});
       		client.subscriptions.push(_sub);
       	}else{
       		//不是
-      		_sub = new Subscription({topic: _topic, abs: true, qos: _qos});
+      		_sub = new Subscription({topic: _topic, abs: true, qos: _qos, topicDesc: _topic});
       		client.subscriptions.push(_sub);
       	}
       	//将认可的订阅qos加入到返回数组
-      granted.push(_qos);
-      _subs.push(_sub);
+      	granted.push(_qos);
+      	//_subs.push(_sub);			//TESTING redundant 13032013
     }
 	//SUBACK
     client.suback({messageId: packet.messageId, granted: granted});
@@ -95,11 +111,45 @@ mqtt.createServer(function(client) {
     _nodeLog.info('Client[clientId=' + client.id + '] just subscribed 1 subscription');
     _nodeLog.info('His subscription: ' + util.inspect(client.subscriptions, true, null));
   });
+  //取消订阅
+  client.on('unsubscribe', function(packet){
+  	//log
+  	_nodeLog.info('Client[clientId=' + client.id + '] has sent a UNSUBSCRIBE');
+  	//loop through client's subscriptions ,find and delete it from the array
+  	var _subs = client.subscriptions;
+  	//_nodeLog.debug(util.inspect(packet.unsubscriptions, true, null));
+  	//_nodeLog.debug(util.inspect(_subs, true, null));
+  	//loop unsubs, each one do delete
+  	for(var i=0; i<packet.unsubscriptions.length;i++){
+  		//the topic of unsub
+  		var _topic = packet.unsubscriptions[i];
+  		for(var j=0;j<_subs.length;j++){
+  			if(_subs[j].topicDesc == _topic){
+  				_subs.splice(j,1);
+  				//log
+  				_nodeLog.warn('Topic: ' + _topic + ' has been dumped by Client[clientId=' + client.id + ']');
+  				break;
+  			}
+  		}
+  	}
+  	_nodeLog.info('Client[clientId=' + client.id + ']\'s subscriptions now are ' + util.inspect(client.subscriptions, true, null));
+  	//send back unsuback
+  	client.unsuback({messageId: packet.messageId});
+  	//log
+  	_nodeLog.info('UNSUBACK has been sent back to Client[clientId=' + client.id + ']');
+  	
+  });
 	//客户发布： 
   client.on('publish', function(packet) {
   	//log
   	_nodeLog.info('Client[clientId=' + client.id + '] has sent a PUBLISH');
   	var targets = getSubscribedClients(packet.topic);
+  	//test if got no subscribedClients
+  	var noTarget = false;
+  	if(isEmptyObject(targets)) {
+  		noTarget = true;
+  		_nodeLog.info('PUBLISH: ' + packet + ' got no subscriber!');
+  	}
   	switch(packet.qos){
   		case 0:
   		//qos 0: 直接发送
@@ -113,6 +163,7 @@ mqtt.createServer(function(client) {
   			break;
   		case 1:
   		//qos 1: generate new mid for further publishing; store the msg; publish it; send PUBACK back;
+  			if(!noTarget){
   			//更改发送目标的qos
   			for(var clientId in targets){
   				targets[clientId] = targets[clientId] > 1 ? 1 : targets[clientId];
@@ -154,6 +205,7 @@ mqtt.createServer(function(client) {
   			}
   			//delete the initMid
   			_msg.initMid = null;
+  			}
   			//PUBACK 
   			client.puback({messageId: packet.messageId});
   			//log
@@ -161,22 +213,41 @@ mqtt.createServer(function(client) {
   			break;
   		case 2:
   			//qos 2: 
-  			//generate new mid for further publishing
-  			var _curMid = _micFac.createMid();
-  			//store the msg
-  			var _msg = new CachedMsg({
-  				curMid  		  : _curMid,
-  				topic   		  : packet.topic,
-  				payload 		  : packet.payload,
-  				publishRecipients : targets,
-  				sender			  : client.id,
-  				initMid			  : packet.messageId 
-  			});
-  			//log
-  			_nodeLog.info('msg: ' + 
+  			var hasCached = false;
+  			//handle DUP
+  			if(packet.dup == true){
+  				//loop cachedMsgs see if the dup one can be found
+  				for(var m=0;m<cachedMsgs.length;m++){
+  					//find if has cached b4
+  					if(cachedMsgs[m].sender === client.id && cachedMsgs[m].initMid === packet.messageId){
+  						_nodeLog.warn('a dup publish has been caught. ' + 
+  								'probably caused by previous disconnection with Client[clientId=' + 
+  								 client.id + ']. The msg: ' + packet);
+  						hasCached = true;
+  						break;
+  					}
+  				}
+  			}
+  			if(!hasCached){
+  				//generate new mid for further publishing
+  				var _curMid = _micFac.createMid();
+  				//store the msg
+  				var _msg = new CachedMsg({
+  					curMid  		  : _curMid,
+  					topic   		  : packet.topic,
+  					payload 		  : packet.payload,
+  					publishRecipients : targets,
+  					sender			  : client.id,
+  					initMid			  : packet.messageId 
+				});
+  				//log
+ 				_nodeLog.info('msg: ' + 
   							util.inspect(_msg, true, null) + 'has been cached.');
-  			//add to CachedMsgs
-  			addCachedMsg(_msg);	
+  				//add to CachedMsgs
+  				addCachedMsg(_msg);	
+  			}
+  			
+  			
   			//PUBREC
   			client.pubrec({messageId: packet.messageId});		
   			//log
@@ -206,48 +277,55 @@ mqtt.createServer(function(client) {
   	}
   	//没找到匹配的缓存msg //这里保证了程序只处理一次publish
   	if(_msg == null) {
-  		this.emit('error', new Error('Unknown message id'));
   		//log
-  		_nodeLog.info('Unknown msg id detected!');
-  		this.pubcomp(packet);
-  		return;
+  		_nodeLog.info('Unknown msg id detected! May caused by DUP! ');
+  		if(packet.dup == true){
+  			this.pubcomp({messageId: packet.messageId, dup: 1});
+  			return;
+  		}else{
+  			this.emit('error', new Error('Unknown message id'));
+  		}
   	}
   	
   	//publish to subscribers
   	var targets = _msg.publishRecipients;
-  	//TODO NO PUBLISHEE!!!
+  	if(isEmptyObject(targets)){
+  		_nodeLog.warn('IN PUBREL, THIS PUBLISHED MSG GOT NO PUBLISHRECIPIENT!AND THE MID SHOULD BE RECYCLED SOON');
+  		_msg.emit('done');
+  	}else{
   	
-  	//循环每一个订阅者
-  	for(var clientId in targets){
-  		//订阅者连接
-  		var _tar = clients[clientId];
-  		//订阅qos
-  		var _qos = targets[clientId];
-  		_tar.publish({
-  			topic    : _msg.topic, 
-  			payload  : _msg.payload,
-  			qos      : _qos,
-  			messageId: _msg.curMid
-  		});
-  		//log
-  		_nodeLog.info('msg: ' + 
-  				' [topic] '    + _msg.topic, 
-  				' [payload] '  + _msg.payload,
-  				' [qos] '  +  _qos,
-  				' [messageId] ' +  _msg.curMid
-  			 + ' has been published to ' + 'Client[clientId=' + clientId + ']');
-  		//从publish列表中删除所有qos==0的订阅者
-  		if(_qos == 0){
-  			_msg.removePublishRecipient(clientId);
+  		//循环每一个订阅者
+  		for(var clientId in targets){
+  			//订阅者连接
+  			var _tar = clients[clientId];
+  			//订阅qos
+  			var _qos = targets[clientId];
+  			_tar.publish({
+  				topic    : _msg.topic, 
+  				payload  : _msg.payload,
+  				qos      : _qos,
+  				messageId: _msg.curMid
+  			});
   			//log
-  			_nodeLog.info('Client[clientId=' + clientId + 
+  			_nodeLog.info('msg: ' + 
+  					' [topic] '    + _msg.topic + 
+  					' [payload] '  + _msg.payload +
+  					' [qos] '  +  _qos +
+  					' [messageId] ' +  _msg.curMid +
+  			 	 	' has been published to ' + 'Client[clientId=' + clientId + ']');
+  			//从publish列表中删除所有qos==0的订阅者
+  			if(_qos == 0){
+  				_msg.removePublishRecipient(clientId);
+  				//log
+  				_nodeLog.info('Client[clientId=' + clientId + 
   							'] has been removed from msg[msgId=' + _msg.curMid + '] \'s PUBLISH recipients');
+  			}
+  			//qos==1在puback中删除
+  			//qos==2在pubrec中做publicToPubrel
   		}
-  		//qos==1在puback中删除
-  		//qos==2在pubrec中做publicToPubrel
-  	}
-    //delete the initial msgId
-    _msg.initMid = null;
+    	//delete the initial msgId
+    	_msg.initMid = null;
+    }
     //send PUBCOMP
     this.pubcomp({messageId: __initMid});
     //log
@@ -288,11 +366,9 @@ mqtt.createServer(function(client) {
   			break;
   		}
   	}
-  	//?????TODO
   	if(_msg == null) {
   		this.emit('error', new Error('Unknown message id'));
-  		this.pubrel(packet);
-  		return;
+  		
   	}
   	//缓存中将收件人从publish转为pubrel
   	var _clientId = client.id;
@@ -417,7 +493,8 @@ function getCachedMsg(msgId, initial, sender){
   				topic		: _msg.topic,
   				payload		: _msg.payload,
   				messageId	: _msg.curMid,
-  				qos			: _msg.publishRecipients[clientId]
+  				qos			: _msg.publishRecipients[clientId],
+  				dup			: true
   			});
   			//log
   			_nodeLog.info('a msg has been republish to Client[clientId=' + clientId + '] on qos' + _msg.publishRecipients[clientId]);
@@ -429,7 +506,7 @@ function getCachedMsg(msgId, initial, sender){
   		//在该msg的pubrel收件人中寻找clientId,如果找到， 发送pubrel，并跳出循环
   		for(var j=0;j<_pubrelRecipients.length;j++){
   			if(clientId === _pubrelRecipients[j]){
-  				clients[clientId].pubrel({messageId : _msg.curMid});
+  				clients[clientId].pubrel({messageId : _msg.curMid, dup: true});
   				break;
   			}
   		}
@@ -467,5 +544,14 @@ function getSubscribedClients(_topic){
   	for(var k in rtn){
   		n++;
   	}
+  	//_nodeLog.debug('TOPIC: ' + _topic + ' got ' + n + ' subscriber(s).');
   	return rtn;
 }
+
+//判断是否为空对象
+ function isEmptyObject(obj){
+ 	for(var k in obj){
+ 		return false;
+ 	}
+ 	return true;
+ }

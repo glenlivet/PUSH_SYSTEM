@@ -1,0 +1,28 @@
+#!/usr/bin/env node
+
+var mqtt = require('../lib/mqtt');
+
+var argv = process.argv;
+
+for (var i = 2; i <= 5; i++) {
+	if(!argv[i]) {
+		console.log('usage: node mqtt_sub [port] [host] [clientId] [topic]');	
+		process.exit(-1);
+	}
+}
+
+var port = argv[2]
+	, host = argv[3]
+	, _clientId = argv[4]
+	, topic = argv[5];
+
+var c = mqtt.createClient(port, host, {clientId: _clientId});
+c.on('message', function(topic, message) {
+    console.log(topic + ' ' + message);
+  });
+
+c.on('connect', function() {
+	console.log('connected');
+  c.unsubscribe(topic);
+  
+});
