@@ -76,7 +76,7 @@ mqtt.createServer(function(client) {
         //是否为wildcard订阅
         if(_topic.indexOf('+')>=0||_topic.indexOf('#')>=0){
         	//是，用正则表达式
-       		var _reg = new RegExp(_topic.replace('+', '[^\/]+').replace('#', '.+$'));
+       		var _reg = new RegExp('^' + _topic.replace('+', '[^\/]+').replace('/#', '(/.+)?$'));
 			//新建一个Subscription对象
 			_sub = new Subscription({topic: _reg, abs: false, qos: _qos});
       		client.subscriptions.push(_sub);
