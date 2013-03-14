@@ -11,7 +11,7 @@ for (var i = 2; i <= 6; i++) {
 var port = argv[2]
   , host = argv[3]
   , topic = argv[4]
-  , payload = argv[5];
+  , payload = argv[5]
   , _retain = argv[6];
   var _shouldRetain = false;
   if(_retain != 0) _shouldRetain = true;

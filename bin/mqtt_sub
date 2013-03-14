@@ -18,12 +18,14 @@ var port = argv[2]
 
 var c = mqtt.createClient(port, host, {clientId: _clientId});
 
+c.on('message', function(topic, message, packet) {
+    console.log(topic + ' ' + message);
+  });
+
 c.on('connect', function() {
 	console.log('connected');
   c.subscribe(topic, {qos: 0}, function(err, origSubs){
   	console.log('subscription confirmed');
   });
-  c.on('message', function(topic, message) {
-    console.log(topic + ' ' + message);
-  });
+  
 });
