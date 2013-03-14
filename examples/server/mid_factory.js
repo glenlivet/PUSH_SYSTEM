@@ -1,5 +1,5 @@
 /**
- * New node file
+ * 该方法有一个问题，异步的时候，需要同步方法！！！
  */
  var util = require("util");
  var events = require("events");

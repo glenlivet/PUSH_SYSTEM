@@ -1,0 +1,3 @@
+MessageID 
+module: generate#subscribe ('number' !== typeof qos)
+subscription regex

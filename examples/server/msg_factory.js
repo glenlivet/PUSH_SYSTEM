@@ -18,18 +18,18 @@
  	//主题
  	this.topic  = obj.topic;
  	//内容
- 	this.payload = obj.payload;
+ 	this.payload = obj.payload||null;
  	//收件人（用clientId和qos形成的对象表示）
  	//eg. publishRecipients[glenn] = 0 表示接收者glenn qos等级0
  	this.publishRecipients = obj.publishRecipients||{};
 	
  	this.pubrelRecipients = obj.pubrelRecipients||[];
  	//发送人(clientId)
- 	this.sender = obj.sender;
+ 	this.sender = obj.sender||null;
  	//发送时间
  	this.createdTime = obj.createdTime||new Date();
  	//初始mid
- 	this.initMid = obj.initMid;
+ 	this.initMid = obj.initMid||null;
  	
  	events.EventEmitter.call(this);
  }

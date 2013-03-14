@@ -2,7 +2,7 @@
  * New node file
  */
  //TODO: getCachedMsg() leaving to be finished
- //TODO: 没有做retain
+ //TODO: 没有做retain          ?????????????//TESTING
  //TODO: client.on('unsubscribe') ??????//TESTING
  //TODO: dup						????????//TESTING
  //TODO: 
@@ -15,6 +15,7 @@ var mqtt = require('../..')
   , Subscription = require('./Subscription.js')
   , MicFactory = require('./mid_factory.js')
   , CachedMsg = require('./msg_factory.js')
+  , RetainMsgFac = require('./retain_msg.js')
   , util = require('util');
   //所有客户端connection的集合
   //这里的client是一个连接到该client的connection对象
@@ -24,8 +25,11 @@ var mqtt = require('../..')
   // }
   var clients = {};
   var cachedMsgs = [];
+  //类型 { topic : msg} 
+  var retainMsgs = {};
   var _micFac = new MicFactory();
   var _nodeLog = new NodeLog(true);
+  
   //var _msgFac = new MsgFactory();
   //var _doLog = true;
   
@@ -61,10 +65,14 @@ mqtt.createServer(function(client) {
     _nodeLog.info('His subscription: ' + util.inspect(client.subscriptions, true, null));
   });
 	//客户订阅主题（将订阅主题纪录下来）
+	//暂时是一订阅就给该用户发retain信息
+	//更合理的应该是等suback之后再发
   client.on('subscribe', function(packet) {
   	//log
   	_nodeLog.info('Client[clientId=' + client.id + '] has sent a SUBSCRIBE');
     var granted = [];
+    //retains
+    var retainsMet = {};
     //var _subs = [];       //TESTING redundant 13032013
 
     for (var i = 0; i < packet.subscriptions.length; i++) {
@@ -96,14 +104,20 @@ mqtt.createServer(function(client) {
 			//新建一个Subscription对象
 			_sub = new Subscription({topic: _reg, abs: false, qos: _qos, topicDesc: _topic});
       		client.subscriptions.push(_sub);
+      		handleRetainPublish(client, _reg, _qos);
+      		
       	}else{
       		//不是
       		_sub = new Subscription({topic: _topic, abs: true, qos: _qos, topicDesc: _topic});
       		client.subscriptions.push(_sub);
+      		//handle retains
+      		handleRetainPublish(client, _topic, _qos);
+      		
       	}
       	//将认可的订阅qos加入到返回数组
       	granted.push(_qos);
       	//_subs.push(_sub);			//TESTING redundant 13032013
+      	
     }
 	//SUBACK
     client.suback({messageId: packet.messageId, granted: granted});
@@ -143,12 +157,36 @@ mqtt.createServer(function(client) {
   client.on('publish', function(packet) {
   	//log
   	_nodeLog.info('Client[clientId=' + client.id + '] has sent a PUBLISH');
+  	
+  	//handle Retain
+  	if(packet.retain == true){
+  		var _topic = packet.topic;
+  		_nodeLog.debug('Received a RETAIN MSG on [TOPIC:' + _topic + '].');
+  		//handle delete retain msg (which got a null payload)
+  		if('undefined' == typeof packet.payload || null == packet.payload || '' == packet.payload){
+  			_nodeLog.info('A DEL-RETAIN-COMMAND MSG on [TOPIC: ' + _topic + '] has received!');
+  			for(var __topic in retainMsgs){
+  				if(_topic === __topic){
+  					delete retainMsgs[__topic];
+  					_nodeLog.info('Retain Msg on [TOPIC:' + _topic + '] has been deleted!');
+  					break;
+  				}
+  			}
+  		}
+  		//otherwise add/renew the retain msg
+  		var _retainMsg = new RetainMsgFac.retainMsg(packet.payload, packet.qos);
+  		retainMsgs[_topic] = _retainMsg;
+  		_nodeLog.info('[RETAIN MSG] [TOPIC: ' + _topic + '] [PAYLOAD: ' + packet.payload + '] [QOS: ' + packet.qos +
+  						'] has been added/renewed in retainMsgs collection');
+  		
+  	}
+  	
   	var targets = getSubscribedClients(packet.topic);
   	//test if got no subscribedClients
   	var noTarget = false;
   	if(isEmptyObject(targets)) {
   		noTarget = true;
-  		_nodeLog.info('PUBLISH: ' + packet + ' got no subscriber!');
+  		_nodeLog.info('PUBLISH: ' + util.inspect(packet, true, null) + ' got no subscriber!');
   	}
   	switch(packet.qos){
   		case 0:
@@ -219,7 +257,7 @@ mqtt.createServer(function(client) {
   				//loop cachedMsgs see if the dup one can be found
   				for(var m=0;m<cachedMsgs.length;m++){
   					//find if has cached b4
-  					if(cachedMsgs[m].sender === client.id && cachedMsgs[m].initMid === packet.messageId){
+  					if(client.id === cachedMsgs[m].sender && packet.messageId === cachedMsgs[m].initMid){
   						_nodeLog.warn('a dup publish has been caught. ' + 
   								'probably caused by previous disconnection with Client[clientId=' + 
   								 client.id + ']. The msg: ' + packet);
@@ -547,6 +585,65 @@ function getSubscribedClients(_topic){
   	//_nodeLog.debug('TOPIC: ' + _topic + ' got ' + n + ' subscriber(s).');
   	return rtn;
 }
+
+ function handleRetainPublish(client, _topic, _qos){
+ 	for(var _retainTopic in retainMsgs){
+    	if('object' === typeof _topic ? _topic.test(_retainTopic) : _topic === _retainTopic){
+    		_nodeLog.debug('[RETAIN PUBLISH] find a match on [TOPIC: ' + _topic + '].');
+      		//publish
+      		var _modQos = retainMsgs[_retainTopic].arrangeQos(_qos);
+      		_nodeLog.debug('[RETAIN PUBLISH] sent by [QOS: ' + _modQos + '].');
+      		switch(_modQos){
+      			case 0:
+      				client.publish({
+      								topic		: _retainTopic, 
+      								payload		: retainMsgs[_retainTopic].payload,
+      								qos			: 0});
+      				_nodeLog.info('[RETAIN MSG]: ' + '[topic] ' +  _retainTopic + ' [payload]' + retainMsgs[_retainTopic].payload + ' [qos]0 ' + 
+  								' has just been published to Client[clientId=' + client.id + ']');
+  					break;
+      			case 1:
+      			case 2:
+      				//createMid;
+      				var _mid = _micFac.createMid(); 
+      				var _targets ={};
+      				_targets[client.id] = _modQos;
+      				//construct a cachedMsg; 
+      				var _cachedMsg = new CachedMsg({
+      					curMid  		  : _mid,
+  						topic   		  : _retainTopic,
+  						payload 		  : retainMsgs[_retainTopic].payload,
+  						publishRecipients : _targets
+      				});
+      				//add to cachedMsgs; 
+      				addCachedMsg(_cachedMsg);
+      				//publish
+      				client.publish({
+      					topic		: _retainTopic,
+      					payload 	: retainMsgs[_retainTopic].payload,
+      					messageId	: _mid,
+      					qos			: _modQos,
+      					retain		: true
+      				});
+      				//log
+      				_nodeLog.info('[RETAIN MSG]: ' + '[topic] '  +  _retainTopic + 
+  								   ' [payload] '  +  retainMsgs[_retainTopic].payload + 
+  								   ' [qos] '      +  _modQos + 
+  								   ' [messageId] ' +  _mid + 
+  								   ' has just been sent to Client[clientId=' + client.id + ']');
+  					break;
+  				default:
+  					//ERROR
+  					client.emit('error', new Error('[SYSTEM ERR]Wrong QOS detected when publish a retain msg to Client[clientId=' + 
+  								client.id + '].'));
+  					break;
+      		}
+      		
+      		
+      	}
+    }
+ 
+ }
 
 //判断是否为空对象
  function isEmptyObject(obj){

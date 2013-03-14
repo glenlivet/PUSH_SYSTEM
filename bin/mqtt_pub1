@@ -4,7 +4,7 @@ var mqtt = require('../lib/mqtt');
 
 var argv = process.argv;
 
-for (var i = 2; i <= 5; i++) {
+for (var i = 2; i <= 6; i++) {
   if(!argv[i]) process.exit(-1);
 }
 
@@ -12,11 +12,14 @@ var port = argv[2]
   , host = argv[3]
   , topic = argv[4]
   , payload = argv[5];
+  , _retain = argv[6];
+  var _shouldRetain = false;
+  if(_retain != 0) _shouldRetain = true;
 
 var client = mqtt.createClient(port, host);
 //console.log('ss');
 client.on('connect', function() {
 	console.log('connected');
-  client.publish(topic, payload, {qos: 1, retain: false});
+  client.publish(topic, payload, {qos: 1, retain: _shouldRetain});
   client.end();
 });
